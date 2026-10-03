@@ -6,8 +6,11 @@ A Model Context Protocol (MCP) server that empowers your AI assistant (like Clau
 
 ## 🌟 Features
 
-* **`track_job_application`**: Logs or updates an application with Company, Role, URL, Location, Status, CV file path (PDF/DOCX/URL), and structured body notes.
+* **`track_job_application`**: Logs or updates an application with Company, Role, URL, Location, Status, CV file path (PDF/DOCX/URL), Contact, Next Follow-up date, and structured body notes.
 * **`attach_cv`**: Uploads and attaches a tailored CV file directly to an existing job application in Notion (disambiguates if multiple positions exist).
+* **`get_application_insights`**: Computes a real-time dashboard of total applications, response & conversion rates, monthly trends, field/domain breakdown, and stale application alerts (> 14 days).
+* **`draft_followup_message`**: Generates a tailored LinkedIn InMail or Email follow-up note referencing your application date, role, and key strengths.
+* **`generate_interview_prep`**: Generates a pre-interview cheat sheet with a 30-second pitch, your tailored match points, likely technical questions, and reverse-interview questions for the company.
 * **`update_job_status`**: Easily updates an application stage (e.g. from *Applied* to *Interview* or *Offer*) and appends timestamped interview notes.
 * **`list_job_applications`**: Formats a Markdown overview table of all tracked applications (optionally filtered by status).
 * **`get_job_details`**: Retrieves full notes, match points, attached CVs, and history for any company application.

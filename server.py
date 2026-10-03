@@ -76,6 +76,9 @@ def inspect_database_schema(client: Client, db_id: str) -> Dict[str, Any]:
             "notes_prop": None,
             "priority_prop": None,
             "cv_prop": None,
+            "contact_prop": None,
+            "followup_prop": None,
+            "domain_prop": None,
             "status_options": []
         }
 
@@ -87,6 +90,8 @@ def inspect_database_schema(client: Client, db_id: str) -> Dict[str, Any]:
                 schema["title_prop"] = name
             elif prop_type == "url" and not schema["url_prop"]:
                 schema["url_prop"] = name
+            elif prop_type == "date" and not schema["followup_prop"] and any(k in lower_name for k in ["follow", "next"]):
+                schema["followup_prop"] = name
             elif prop_type == "date" and not schema["date_prop"]:
                 if any(k in lower_name for k in ["applied", "date", "created"]):
                     schema["date_prop"] = name
@@ -96,10 +101,14 @@ def inspect_database_schema(client: Client, db_id: str) -> Dict[str, Any]:
                 schema["status_options"] = [opt.get("name") for opt in opts]
             elif prop_type == "select" and "priority" in lower_name and not schema["priority_prop"]:
                 schema["priority_prop"] = name
+            elif prop_type in ("rich_text", "select") and not schema["domain_prop"] and any(k in lower_name for k in ["domain", "field", "category", "track"]):
+                schema["domain_prop"] = name
             elif prop_type == "files" and not schema["cv_prop"]:
                 schema["cv_prop"] = name
             elif any(k in lower_name for k in ["cv", "resume"]) and not schema["cv_prop"]:
                 schema["cv_prop"] = name
+            elif prop_type in ("rich_text", "select") and not schema["contact_prop"] and any(k in lower_name for k in ["contact", "recruiter", "person"]):
+                schema["contact_prop"] = name
             elif prop_type in ("rich_text", "select") and not schema["role_prop"] and any(k in lower_name for k in ["role", "position", "title", "job"]):
                 schema["role_prop"] = name
             elif prop_type in ("rich_text", "select") and not schema["location_prop"] and any(k in lower_name for k in ["location", "type", "place", "workplace"]):
@@ -132,6 +141,23 @@ def inspect_database_schema(client: Client, db_id: str) -> Dict[str, Any]:
         return schema
     except Exception as e:
         raise RuntimeError(f"Error inspecting Notion database ({db_id}): {str(e)}")
+
+def infer_domain(role: str) -> str:
+    """Infers the technology or career domain based on the role title."""
+    lower = role.lower()
+    if any(k in lower for k in ["ai", "machine learning", "ml", "llm", "nlp", "computer vision", "deep learning", "genai", "artificial intelligence"]):
+        return "AI / Machine Learning"
+    elif any(k in lower for k in ["data engineer", "data pipeline", "etl", "spark", "analytics engineer", "big data"]):
+        return "Data Engineering"
+    elif any(k in lower for k in ["devops", "sre", "platform", "infrastructure", "cloud", "kubernetes", "systems", "site reliability"]):
+        return "Platform & DevOps"
+    elif any(k in lower for k in ["frontend", "front-end", "ui", "react", "vue", "angular", "web developer"]):
+        return "Frontend"
+    elif any(k in lower for k in ["fullstack", "full-stack", "full stack"]):
+        return "Fullstack"
+    elif any(k in lower for k in ["backend", "back-end", "api", "server", "python", "golang", "java", "distributed"]):
+        return "Backend"
+    return "Software Engineering"
 
 def upload_cv_file(client: Client, file_path_or_url: str) -> Dict[str, Any]:
     """Uploads a local CV file or formats an external URL for Notion."""
@@ -379,6 +405,30 @@ def get_page_status(page: Dict[str, Any], status_prop: Optional[str]) -> str:
         return s_data["status"].get("name", "-")
     return "-"
 
+def get_page_date(page: Dict[str, Any], date_prop: Optional[str]) -> Optional[str]:
+    """Helper to extract date string (YYYY-MM-DD) from a Notion page."""
+    if not date_prop:
+        return None
+    props = page.get("properties", {})
+    d_data = props.get(date_prop, {})
+    if d_data.get("type") == "date" and d_data.get("date"):
+        return d_data["date"].get("start")
+    return None
+
+def get_page_text(page: Dict[str, Any], prop_name: Optional[str]) -> str:
+    """Helper to extract plain text from any rich_text or select property."""
+    if not prop_name:
+        return ""
+    props = page.get("properties", {})
+    p_data = props.get(prop_name, {})
+    p_type = p_data.get("type")
+    if p_type == "rich_text":
+        texts = p_data.get("rich_text", [])
+        return texts[0].get("plain_text", "").strip() if texts else ""
+    elif p_type == "select" and p_data.get("select"):
+        return p_data["select"].get("name", "").strip()
+    return ""
+
 @app.tool(
     name="track_job_application",
     description="Logs a new job application or updates an existing one in Notion with company, role, URL, status, location, CV file path, and rich notes."
@@ -392,6 +442,8 @@ def track_job_application(
     priority: str = "",
     applied_date: str = "",
     cv_file_path: str = "",
+    contact: str = "",
+    next_followup: str = "",
     summary: str = "",
     match_points: Optional[List[str]] = None,
     notes: str = ""
@@ -411,6 +463,9 @@ def track_job_application(
         notes_prop = schema.get("notes_prop")
         priority_prop = schema.get("priority_prop")
         cv_prop = schema.get("cv_prop")
+        contact_prop = schema.get("contact_prop")
+        followup_prop = schema.get("followup_prop")
+        domain_prop = schema.get("domain_prop")
 
         # Process CV file if provided
         upload_data = {}
@@ -480,6 +535,21 @@ def track_job_application(
         if priority_prop and priority:
             properties[priority_prop] = {
                 "select": {"name": priority}
+            }
+
+        if contact_prop and contact:
+            properties[contact_prop] = {
+                "rich_text": [{"type": "text", "text": {"content": contact}}]
+            }
+
+        if followup_prop and next_followup:
+            properties[followup_prop] = {
+                "date": {"start": next_followup}
+            }
+
+        if domain_prop and role:
+            properties[domain_prop] = {
+                "select": {"name": infer_domain(role)}
             }
 
         if cv_prop and "property_payload" in upload_data:
@@ -859,6 +929,270 @@ def get_job_details(company: str, role: str = "") -> str:
         return "\n".join(details)
     except Exception as e:
         return f"❌ Failed to retrieve job details: {str(e)}"
+
+@app.tool(
+    name="get_application_insights",
+    description="Calculates comprehensive job hunt analytics: application counters, response/conversion rates, monthly trends, field/domain breakdown, and stale application alerts."
+)
+def get_application_insights() -> str:
+    """Calculates comprehensive job hunt analytics from the Notion database."""
+    try:
+        client = get_notion_client()
+        db_id = get_db_id()
+        schema = inspect_database_schema(client, db_id)
+
+        title_prop = schema.get("title_prop", "Company 1") or "Company 1"
+        role_prop = schema.get("role_prop")
+        status_prop = schema.get("status_prop")
+        date_prop = schema.get("date_prop")
+
+        pages = query_database_pages(client, db_id)
+        if not pages:
+            return "📊 No applications found in your Notion database yet."
+
+        total_tracked = len(pages)
+        status_counts: Dict[str, int] = {}
+        monthly_counts: Dict[str, int] = {}
+        domain_counts: Dict[str, int] = {}
+        stale_apps: List[Dict[str, Any]] = []
+
+        now = datetime.now()
+
+        for page in pages:
+            company = get_page_company(page, title_prop)
+            role = get_page_role(page, role_prop)
+            status = get_page_status(page, status_prop)
+            date_str = get_page_date(page, date_prop)
+
+            st_key = status if status != "-" else "Unspecified"
+            status_counts[st_key] = status_counts.get(st_key, 0) + 1
+
+            domain = infer_domain(role) if role else "General"
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+
+            if date_str:
+                try:
+                    d_obj = datetime.strptime(date_str[:10], "%Y-%m-%d")
+                    m_key = d_obj.strftime("%B %Y")
+                    monthly_counts[m_key] = monthly_counts.get(m_key, 0) + 1
+
+                    if status.lower() == "applied":
+                        days_ago = (now - d_obj).days
+                        if days_ago >= 14:
+                            stale_apps.append({
+                                "company": company,
+                                "role": role or "Role unspecified",
+                                "date": date_str,
+                                "days_ago": days_ago
+                            })
+                except Exception:
+                    pass
+
+        applied_count = status_counts.get("Applied", 0)
+        screening_count = status_counts.get("Screening", 0)
+        interview_count = status_counts.get("Interview", 0)
+        offer_count = status_counts.get("Offer", 0)
+        rejected_count = status_counts.get("Rejected", 0)
+        wishlist_count = status_counts.get("Wishlist", 0)
+
+        active_interviews = screening_count + interview_count
+        positive_responses = screening_count + interview_count + offer_count
+        submitted_applications = total_tracked - wishlist_count
+
+        response_rate = 0.0
+        if submitted_applications > 0:
+            response_rate = (positive_responses / submitted_applications) * 100
+
+        lines = [
+            "## 📊 Job Search Analytics & Insights Dashboard\n",
+            "### 🎯 Pipeline Funnel Overview",
+            f"- **Total Tracked:** {total_tracked}",
+            f"- **Total Submitted:** {submitted_applications} (Wishlist: {wishlist_count})",
+            f"- **Active Pipeline (Interviews/Screenings):** {active_interviews}",
+            f"- **Offers:** {offer_count} 🎉",
+            f"- **Rejections:** {rejected_count}",
+            f"- **Awaiting Initial Response:** {applied_count}",
+            f"- **Positive Response Rate:** `{response_rate:.1f}%` *(Screening/Interview vs Submitted)*\n",
+            "### 📅 Applications Submitted per Month"
+        ]
+
+        if monthly_counts:
+            for month, count in sorted(monthly_counts.items(), key=lambda x: x[0], reverse=True):
+                lines.append(f"- **{month}:** {count} applications")
+        else:
+            lines.append("- *No application dates recorded yet.*")
+
+        lines.append("\n### 🛠️ Breakdown by Career Domain")
+        for domain, count in sorted(domain_counts.items(), key=lambda x: x[1], reverse=True):
+            pct = (count / total_tracked) * 100
+            lines.append(f"- **{domain}:** {count} ({pct:.0f}%)")
+
+        if stale_apps:
+            lines.append("\n### ⏳ Stale Applications (> 14 Days with No Status Update)")
+            for s in sorted(stale_apps, key=lambda x: x["days_ago"], reverse=True):
+                lines.append(f"- **{s['company']}** ({s['role']}): Applied `{s['date']}` (**{s['days_ago']} days ago**) ➡️ *Recommended: Send polite follow-up or check status.*")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ Failed to compute insights: {str(e)}"
+
+@app.tool(
+    name="draft_followup_message",
+    description="Drafts a tailored, polite recruiter follow-up message (for LinkedIn or Email) for a job application in Notion."
+)
+def draft_followup_message(
+    company: str,
+    role: str = "",
+    channel: str = "LinkedIn",
+    contact_name: str = ""
+) -> str:
+    """Drafts a follow-up message referencing application date, role, and key highlights."""
+    try:
+        client = get_notion_client()
+        db_id = get_db_id()
+        schema = inspect_database_schema(client, db_id)
+
+        title_prop = schema.get("title_prop", "Company 1") or "Company 1"
+        role_prop = schema.get("role_prop")
+        date_prop = schema.get("date_prop")
+        contact_prop = schema.get("contact_prop")
+
+        results = query_database_pages(
+            client,
+            db_id,
+            query_filter={
+                "property": title_prop,
+                "title": {"contains": company}
+            }
+        )
+
+        company_pages = [p for p in results if company.lower() in get_page_company(p, title_prop).lower()]
+        if not company_pages:
+            return f"❌ Could not find an application for '{company}' in Notion."
+
+        target_page = None
+        if len(company_pages) == 1:
+            target_page = company_pages[0]
+        else:
+            if role:
+                for p in company_pages:
+                    if role.lower() in get_page_role(p, role_prop).lower():
+                        target_page = p
+                        break
+            if not target_page:
+                return f"⚠️ Multiple roles found for {company}. Please specify role."
+
+        matched_role = get_page_role(target_page, role_prop) or "the open position"
+        applied_date = get_page_date(target_page, date_prop)
+        contact = contact_name or get_page_text(target_page, contact_prop) or "Hiring Team"
+
+        greeting = f"Hi {contact}" if contact != "Hiring Team" else "Hi Team"
+        timing_str = f"on {applied_date}" if applied_date else "recently"
+
+        if channel.lower() == "linkedin":
+            msg = (
+                f"### 💬 Tailored LinkedIn Follow-Up ({company} - {matched_role})\n\n"
+                f"{greeting},\n\n"
+                f"I hope you're having a great week! I recently applied {timing_str} for the **{matched_role}** role at **{company}**.\n\n"
+                f"Given my background building distributed systems, backend architectures, and AI integrations, I'm very excited about what {company} is building.\n\n"
+                f"I'd love to connect and see if my background aligns with what the team is looking for. Thank you for your time!\n\n"
+                f"Best regards,\nAhmed Khalifa"
+            )
+        else:
+            msg = (
+                f"### ✉️ Tailored Email Follow-Up ({company} - {matched_role})\n\n"
+                f"**Subject:** Following up: Application for {matched_role} - Ahmed Khalifa\n\n"
+                f"{greeting},\n\n"
+                f"I hope this email finds you well.\n\n"
+                f"I wanted to briefly follow up on the application I submitted {timing_str} for the **{matched_role}** position at **{company}**.\n\n"
+                f"I remain very enthusiastic about the opportunity to contribute to {company}, particularly with my experience developing robust backend services and AI agent systems.\n\n"
+                f"Please let me know if there are any additional materials or details I can provide to support my application. I look forward to hearing from you.\n\n"
+                f"Best regards,\n\nAhmed Khalifa\n[LinkedIn Profile] | [Portfolio/GitHub]"
+            )
+
+        return msg
+    except Exception as e:
+        return f"❌ Failed to draft follow-up message: {str(e)}"
+
+@app.tool(
+    name="generate_interview_prep",
+    description="Generates an interview preparation cheat sheet based on the job requirements, CV match points, and notes saved in Notion."
+)
+def generate_interview_prep(company: str, role: str = "") -> str:
+    """Generates a structured interview prep plan tailored to the saved job in Notion."""
+    try:
+        client = get_notion_client()
+        db_id = get_db_id()
+        schema = inspect_database_schema(client, db_id)
+
+        title_prop = schema.get("title_prop", "Company 1") or "Company 1"
+        role_prop = schema.get("role_prop")
+
+        results = query_database_pages(
+            client,
+            db_id,
+            query_filter={
+                "property": title_prop,
+                "title": {"contains": company}
+            }
+        )
+
+        company_pages = [p for p in results if company.lower() in get_page_company(p, title_prop).lower()]
+        if not company_pages:
+            return f"❌ No application found for '{company}' in Notion."
+
+        target_page = None
+        if len(company_pages) == 1:
+            target_page = company_pages[0]
+        else:
+            if role:
+                for p in company_pages:
+                    if role.lower() in get_page_role(p, role_prop).lower():
+                        target_page = p
+                        break
+            if not target_page:
+                return f"⚠️ Multiple roles found for {company}. Please specify role."
+
+        page_id = target_page["id"]
+        matched_role = get_page_role(target_page, role_prop) or "Role"
+
+        blocks_res = client.blocks.children.list(block_id=page_id)
+        blocks = blocks_res.get("results", [])
+
+        extracted_text = []
+        for b in blocks:
+            b_type = b.get("type", "")
+            data = b.get(b_type, {})
+            texts = data.get("rich_text", [])
+            t_str = "".join([t.get("plain_text", "") for t in texts])
+            if t_str:
+                extracted_text.append(t_str)
+
+        notes_summary = "\n".join(extracted_text) if extracted_text else "No additional notes logged."
+        domain = infer_domain(matched_role)
+
+        prep = [
+            f"# 🎯 Interview Prep Cheat Sheet: {company} ({matched_role})\n",
+            f"**Domain Track:** `{domain}`\n",
+            "## 1. 🌟 Your 30-Second Elevator Pitch",
+            f"\"I'm a software engineer specializing in {domain.lower()}, with a focus on building high-performance, reliable systems and AI-powered automation. I was drawn to {company} because of your focus on scalable engineering, and I'm excited to bring my experience to the {matched_role} team.\"\n",
+            "## 2. 🔑 Core Strengths & CV Highlights on File",
+            f"Review your tailored points for {company}:",
+            notes_summary + "\n",
+            "## 3. 💡 High-Probability Technical & Domain Questions to Expect",
+            f"- **System Architecture:** How would you design a scalable service to handle sudden spikes in traffic at {company}?",
+            "- **Reliability & Debugging:** Describe a time you diagnosed and resolved a challenging production failure or race condition.",
+            "- **Domain Depth:** How do you approach API versioning, data consistency, and testing in your services?",
+            "- **AI / Agentic Integration:** When integrating LLMs or agent workflows, how do you manage latency, determinism, and fallback strategies?\n",
+            "## 4. ❓ Smart Reverse-Interview Questions (To Ask Them)",
+            f"- *\"What is the biggest engineering or infrastructure bottleneck the {matched_role} team is tackling this quarter?\"*",
+            f"- *\"How does the team balance shipping fast features versus maintaining code quality and technical debt?\"*",
+            "- *\"What does success look like in this role 90 days after joining?\"*"
+        ]
+
+        return "\n".join(prep)
+    except Exception as e:
+        return f"❌ Failed to generate interview prep: {str(e)}"
 
 if __name__ == "__main__":
     app.run(transport="stdio")
