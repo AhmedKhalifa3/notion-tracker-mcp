@@ -267,7 +267,6 @@ def track_job_application(
 
         target_page_id = None
         for page in existing_pages:
-            # If role matches or no role was specified
             target_page_id = page["id"]
             break
 
