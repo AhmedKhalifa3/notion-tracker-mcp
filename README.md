@@ -25,7 +25,7 @@
 
 ## 🔗 The Complete Career Pipeline: Pair with Overleaf CV Agent
 
-This MCP server is designed to work hand-in-hand with [Overleaf CV Agent](../cv_agent) to automate your entire application workflow:
+This MCP server is designed to work hand-in-hand with [Overleaf CV Agent](https://github.com/AhmedKhalifa3/overleaf-cv-agent) to automate your entire application workflow:
 
 ```text
 ┌────────────────────────────────────────────────────────┐
