@@ -539,6 +539,58 @@ def update_job_status(
         return f"❌ Failed to update job status: {str(e)}"
 
 @app.tool(
+    name="list_job_applications",
+    description="Lists tracked job applications from Notion, optionally filtering by status (e.g. 'Interview', 'Applied')."
+)
+def list_job_applications(status_filter: str = "") -> str:
+    """Lists tracked job applications with their status, role, and URL."""
+    try:
+        client = get_notion_client()
+        db_id = get_db_id()
+        schema = inspect_database_schema(client, db_id)
+
+        title_prop = schema.get("title_prop", "Company 1") or "Company 1"
+        role_prop = schema.get("role_prop")
+        status_prop = schema.get("status_prop")
+        url_prop = schema.get("url_prop")
+
+        query_filter = None
+        if status_filter and status_prop:
+            query_filter = {
+                "property": status_prop,
+                "select": {"equals": status_filter}
+            }
+
+        pages = query_database_pages(client, db_id, query_filter)
+        if not pages:
+            msg = "No job applications found"
+            if status_filter:
+                msg += f" with status '{status_filter}'"
+            return msg + " in your Notion tracker."
+
+        output = [f"### 📋 Job Applications Tracker ({len(pages)} entries)\n"]
+        output.append("| Company | Role | Status | Job URL |")
+        output.append("| :--- | :--- | :--- | :--- |")
+
+        for page in pages:
+            props = page.get("properties", {})
+            company = get_page_company(page, title_prop) or "Unnamed"
+            role = get_page_role(page, role_prop) or "-"
+            status = get_page_status(page, status_prop)
+
+            url = "-"
+            if url_prop and url_prop in props:
+                raw_url = props[url_prop].get("url")
+                if raw_url:
+                    url = f"[Link]({raw_url})"
+
+            output.append(f"| **{company}** | {role} | `{status}` | {url} |")
+
+        return "\n".join(output)
+    except Exception as e:
+        return f"❌ Failed to list applications: {str(e)}"
+
+@app.tool(
     name="get_job_details",
     description="Retrieves the detailed notes and status of a specific job application from Notion. Specify role if multiple positions exist at that company."
 )
