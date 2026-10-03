@@ -6,6 +6,7 @@ Supports both classic Notion databases and Notion's Data Sources architecture.
 
 import os
 import sys
+import mimetypes
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
@@ -74,6 +75,7 @@ def inspect_database_schema(client: Client, db_id: str) -> Dict[str, Any]:
             "location_prop": None,
             "notes_prop": None,
             "priority_prop": None,
+            "cv_prop": None,
             "status_options": []
         }
 
@@ -94,6 +96,10 @@ def inspect_database_schema(client: Client, db_id: str) -> Dict[str, Any]:
                 schema["status_options"] = [opt.get("name") for opt in opts]
             elif prop_type == "select" and "priority" in lower_name and not schema["priority_prop"]:
                 schema["priority_prop"] = name
+            elif prop_type == "files" and not schema["cv_prop"]:
+                schema["cv_prop"] = name
+            elif any(k in lower_name for k in ["cv", "resume"]) and not schema["cv_prop"]:
+                schema["cv_prop"] = name
             elif prop_type in ("rich_text", "select") and not schema["role_prop"] and any(k in lower_name for k in ["role", "position", "title", "job"]):
                 schema["role_prop"] = name
             elif prop_type in ("rich_text", "select") and not schema["location_prop"] and any(k in lower_name for k in ["location", "type", "place", "workplace"]):
@@ -127,12 +133,80 @@ def inspect_database_schema(client: Client, db_id: str) -> Dict[str, Any]:
     except Exception as e:
         raise RuntimeError(f"Error inspecting Notion database ({db_id}): {str(e)}")
 
+def upload_cv_file(client: Client, file_path_or_url: str) -> Dict[str, Any]:
+    """Uploads a local CV file or formats an external URL for Notion."""
+    if not file_path_or_url:
+        return {}
+
+    # External URL handling
+    if file_path_or_url.startswith(("http://", "https://")):
+        filename = os.path.basename(file_path_or_url.split("?")[0]) or "CV.pdf"
+        return {
+            "type": "external",
+            "filename": filename,
+            "property_payload": {
+                "type": "external",
+                "name": filename,
+                "external": {"url": file_path_or_url}
+            },
+            "block_payload": {
+                "object": "block",
+                "type": "file",
+                "file": {
+                    "type": "external",
+                    "external": {"url": file_path_or_url}
+                }
+            }
+        }
+
+    # Local file handling
+    expanded_path = os.path.abspath(os.path.expanduser(file_path_or_url))
+    if not os.path.isfile(expanded_path):
+        raise FileNotFoundError(f"CV file not found at path: {file_path_or_url}")
+
+    filename = os.path.basename(expanded_path)
+    content_type, _ = mimetypes.guess_type(expanded_path)
+    if not content_type:
+        content_type = "application/pdf"
+
+    # Step 1: Create file upload in Notion
+    upload_res = client.file_uploads.create(
+        filename=filename,
+        content_type=content_type
+    )
+    upload_id = upload_res["id"]
+
+    # Step 2: Send binary data
+    with open(expanded_path, "rb") as f:
+        client.file_uploads.send(file_upload_id=upload_id, file=f)
+
+    return {
+        "type": "file_upload",
+        "upload_id": upload_id,
+        "filename": filename,
+        "property_payload": {
+            "type": "file_upload",
+            "name": filename,
+            "file_upload": {"id": upload_id}
+        },
+        "block_payload": {
+            "object": "block",
+            "type": "file",
+            "file": {
+                "type": "file_upload",
+                "file_upload": {"id": upload_id}
+            }
+        }
+    }
+
 def build_notion_blocks(
     summary: str = "",
     match_points: Optional[List[str]] = None,
     notes: str = "",
     job_url: str = "",
-    location: str = ""
+    location: str = "",
+    cv_filename: str = "",
+    cv_block: Optional[Dict[str, Any]] = None
 ) -> List[Dict[str, Any]]:
     """Builds structured Notion blocks for the page body."""
     blocks: List[Dict[str, Any]] = []
@@ -202,6 +276,16 @@ def build_notion_blocks(
             }
         })
 
+    if cv_block:
+        blocks.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {
+                "rich_text": [{"type": "text", "text": {"content": f"📄 Submitted CV: {cv_filename or 'CV'}"}}]
+            }
+        })
+        blocks.append(cv_block)
+
     return blocks
 
 def query_database_pages(client: Client, db_id: str, query_filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
@@ -251,6 +335,7 @@ def verify_notion_connection() -> str:
             f"- Location Property: {schema.get('location_prop') or 'Not found'}\n"
             f"- Notes Property: {schema.get('notes_prop') or 'Not found'}\n"
             f"- Priority Property: {schema.get('priority_prop') or 'Not found'}\n"
+            f"- CV Property: {schema.get('cv_prop') or 'Not found'}\n"
             f"- Status Options: {', '.join(schema.get('status_options', [])) or 'None'}"
         )
     except Exception as e:
@@ -296,7 +381,7 @@ def get_page_status(page: Dict[str, Any], status_prop: Optional[str]) -> str:
 
 @app.tool(
     name="track_job_application",
-    description="Logs a new job application or updates an existing one in Notion with company, role, URL, status, location, and rich notes."
+    description="Logs a new job application or updates an existing one in Notion with company, role, URL, status, location, CV file path, and rich notes."
 )
 def track_job_application(
     company: str,
@@ -306,6 +391,7 @@ def track_job_application(
     location: str = "",
     priority: str = "",
     applied_date: str = "",
+    cv_file_path: str = "",
     summary: str = "",
     match_points: Optional[List[str]] = None,
     notes: str = ""
@@ -324,6 +410,15 @@ def track_job_application(
         location_prop = schema.get("location_prop")
         notes_prop = schema.get("notes_prop")
         priority_prop = schema.get("priority_prop")
+        cv_prop = schema.get("cv_prop")
+
+        # Process CV file if provided
+        upload_data = {}
+        if cv_file_path:
+            try:
+                upload_data = upload_cv_file(client, cv_file_path)
+            except Exception as e:
+                return f"❌ Failed to read/upload CV file '{cv_file_path}': {str(e)}"
 
         # Search all pages matching this company name
         existing_pages = query_database_pages(
@@ -387,19 +482,26 @@ def track_job_application(
                 "select": {"name": priority}
             }
 
+        if cv_prop and "property_payload" in upload_data:
+            properties[cv_prop] = {
+                "files": [upload_data["property_payload"]]
+            }
+
         blocks = build_notion_blocks(
             summary=summary,
             match_points=match_points,
             notes=notes,
             job_url=job_url,
-            location=location
+            location=location,
+            cv_filename=upload_data.get("filename", ""),
+            cv_block=upload_data.get("block_payload")
         )
 
         if target_page_id:
             # Update the specific existing position
             client.pages.update(page_id=target_page_id, properties=properties)
 
-            update_block = [
+            update_block: List[Dict[str, Any]] = [
                 {
                     "object": "block",
                     "type": "heading_3",
@@ -414,6 +516,15 @@ def track_job_application(
                     "type": "paragraph",
                     "paragraph": {"rich_text": [{"type": "text", "text": {"content": notes}}]}
                 })
+            if "block_payload" in upload_data:
+                update_block.append({
+                    "object": "block",
+                    "type": "heading_3",
+                    "heading_3": {
+                        "rich_text": [{"type": "text", "text": {"content": f"📄 Attached CV: {upload_data.get('filename')}"}}]
+                    }
+                })
+                update_block.append(upload_data["block_payload"])
 
             client.blocks.children.append(block_id=target_page_id, children=update_block)
             return f"✅ Updated existing application for **{company}** - **{role or 'General'}** with status **{status}** in Notion."
@@ -429,6 +540,91 @@ def track_job_application(
 
     except Exception as e:
         return f"❌ Failed to track job application: {str(e)}"
+
+@app.tool(
+    name="attach_cv",
+    description="Uploads and attaches a tailored CV file (PDF/DOCX) or URL to an existing job application in Notion. Specify role if multiple positions exist at that company."
+)
+def attach_cv(company: str, cv_file_path: str, role: str = "") -> str:
+    """Uploads and attaches a CV file to a job application in Notion."""
+    try:
+        client = get_notion_client()
+        db_id = get_db_id()
+        schema = inspect_database_schema(client, db_id)
+
+        title_prop = schema.get("title_prop", "Company 1") or "Company 1"
+        role_prop = schema.get("role_prop")
+        cv_prop = schema.get("cv_prop")
+        status_prop = schema.get("status_prop")
+
+        results = query_database_pages(
+            client,
+            db_id,
+            query_filter={
+                "property": title_prop,
+                "title": {"contains": company}
+            }
+        )
+
+        company_pages = [p for p in results if company.lower() in get_page_company(p, title_prop).lower()]
+        if not company_pages:
+            return f"❌ Could not find an existing application for company '{company}' in Notion."
+
+        target_page = None
+        if len(company_pages) == 1:
+            target_page = company_pages[0]
+        else:
+            if role:
+                for p in company_pages:
+                    if role.lower() in get_page_role(p, role_prop).lower():
+                        target_page = p
+                        break
+            if not target_page:
+                summary_lines = [f"⚠️ Found {len(company_pages)} positions at **{company}**:"]
+                for p in company_pages:
+                    p_role = get_page_role(p, role_prop) or "Role unspecified"
+                    p_status = get_page_status(p, status_prop)
+                    summary_lines.append(f"- **{p_role}** (`{p_status}`)")
+                summary_lines.append(f"\nPlease specify which role to attach this CV to.")
+                return "\n".join(summary_lines)
+
+        page_id = target_page["id"]
+        matched_role = get_page_role(target_page, role_prop)
+
+        # Upload file
+        upload_data = upload_cv_file(client, cv_file_path)
+
+        # 1. Update page property if CV column exists
+        if cv_prop and "property_payload" in upload_data:
+            client.pages.update(
+                page_id=page_id,
+                properties={
+                    cv_prop: {
+                        "files": [upload_data["property_payload"]]
+                    }
+                }
+            )
+
+        # 2. Append embedded file block inside page body
+        cv_blocks: List[Dict[str, Any]] = [
+            {
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {
+                    "rich_text": [{"type": "text", "text": {"content": f"📄 Attached CV: {upload_data.get('filename', 'CV')}"}}]
+                }
+            }
+        ]
+        if "block_payload" in upload_data:
+            cv_blocks.append(upload_data["block_payload"])
+
+        client.blocks.children.append(block_id=page_id, children=cv_blocks)
+
+        role_str = f" ({matched_role})" if matched_role else ""
+        return f"✅ Successfully attached **{upload_data.get('filename')}** to **{company}**{role_str} in Notion!"
+
+    except Exception as e:
+        return f"❌ Failed to attach CV: {str(e)}"
 
 @app.tool(
     name="update_job_status",
