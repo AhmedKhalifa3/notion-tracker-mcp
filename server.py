@@ -262,6 +262,38 @@ def verify_notion_connection() -> str:
             "3. You have shared the database with your Notion integration (click '...' -> 'Connections' -> Add integration)."
         )
 
+def get_page_role(page: Dict[str, Any], role_prop: Optional[str]) -> str:
+    """Helper to extract plain text role from a Notion page."""
+    if not role_prop:
+        return ""
+    props = page.get("properties", {})
+    r_data = props.get(role_prop, {})
+    if r_data.get("type") == "rich_text":
+        texts = r_data.get("rich_text", [])
+        return texts[0].get("plain_text", "").strip() if texts else ""
+    elif r_data.get("type") == "select" and r_data.get("select"):
+        return r_data["select"].get("name", "").strip()
+    return ""
+
+def get_page_company(page: Dict[str, Any], title_prop: str) -> str:
+    """Helper to extract plain text company name from a Notion page."""
+    props = page.get("properties", {})
+    t_data = props.get(title_prop, {})
+    titles = t_data.get("title", [])
+    return titles[0].get("plain_text", "").strip() if titles else ""
+
+def get_page_status(page: Dict[str, Any], status_prop: Optional[str]) -> str:
+    """Helper to extract status string from a Notion page."""
+    if not status_prop:
+        return "-"
+    props = page.get("properties", {})
+    s_data = props.get(status_prop, {})
+    if s_data.get("type") == "select" and s_data.get("select"):
+        return s_data["select"].get("name", "-")
+    elif s_data.get("type") == "status" and s_data.get("status"):
+        return s_data["status"].get("name", "-")
+    return "-"
+
 @app.tool(
     name="track_job_application",
     description="Logs a new job application or updates an existing one in Notion with company, role, URL, status, location, and rich notes."
@@ -278,13 +310,13 @@ def track_job_application(
     match_points: Optional[List[str]] = None,
     notes: str = ""
 ) -> str:
-    """Tracks a job application in the Notion database."""
+    """Tracks a job application in the Notion database, distinguishing multiple roles per company."""
     try:
         client = get_notion_client()
         db_id = get_db_id()
         schema = inspect_database_schema(client, db_id)
 
-        title_prop = schema.get("title_prop", "Company") or "Company"
+        title_prop = schema.get("title_prop", "Company 1") or "Company 1"
         role_prop = schema.get("role_prop")
         status_prop = schema.get("status_prop")
         url_prop = schema.get("url_prop")
@@ -293,22 +325,30 @@ def track_job_application(
         notes_prop = schema.get("notes_prop")
         priority_prop = schema.get("priority_prop")
 
-        # Check if this company already exists
+        # Search all pages matching this company name
         existing_pages = query_database_pages(
             client,
             db_id,
             query_filter={
                 "property": title_prop,
-                "title": {"equals": company}
+                "title": {"contains": company}
             }
         )
 
+        # Check if the specific role at this company already exists
         target_page_id = None
         for page in existing_pages:
-            target_page_id = page["id"]
-            break
+            existing_company = get_page_company(page, title_prop)
+            if existing_company.lower() == company.lower():
+                existing_role = get_page_role(page, role_prop)
+                # If roles match (case-insensitive) or neither has a role specified
+                if role and existing_role and (role.lower() == existing_role.lower()):
+                    target_page_id = page["id"]
+                    break
+                elif not role and not existing_role:
+                    target_page_id = page["id"]
+                    break
 
-        # Prepare properties payload
         properties: Dict[str, Any] = {
             title_prop: {
                 "title": [{"type": "text", "text": {"content": company}}]
@@ -356,7 +396,7 @@ def track_job_application(
         )
 
         if target_page_id:
-            # Update existing page properties and append update block
+            # Update the specific existing position
             client.pages.update(page_id=target_page_id, properties=properties)
 
             update_block = [
@@ -376,9 +416,9 @@ def track_job_application(
                 })
 
             client.blocks.children.append(block_id=target_page_id, children=update_block)
-            return f"✅ Updated existing application for **{company}** ({role or 'Role'}) with status **{status}** in Notion."
+            return f"✅ Updated existing application for **{company}** - **{role or 'General'}** with status **{status}** in Notion."
         else:
-            # Create new page in the database
+            # Create a new, distinct entry for this role
             new_page = client.pages.create(
                 parent={"database_id": db_id},
                 properties=properties,
@@ -392,7 +432,7 @@ def track_job_application(
 
 @app.tool(
     name="update_job_status",
-    description="Updates the status of an existing job application (e.g. Wishlist, Applied, Screening, Interview, Offer, Rejected) and appends notes."
+    description="Updates the status of an existing job application (e.g. Wishlist, Applied, Screening, Interview, Offer, Rejected) and appends notes. If multiple roles exist for a company, specify 'role' to disambiguate."
 )
 def update_job_status(
     company: str,
@@ -400,43 +440,69 @@ def update_job_status(
     role: str = "",
     update_notes: str = ""
 ) -> str:
-    """Updates status and appends notes to an existing job application."""
+    """Updates status and appends notes to a specific job application, disambiguating multiple roles."""
     try:
         client = get_notion_client()
         db_id = get_db_id()
         schema = inspect_database_schema(client, db_id)
 
-        title_prop = schema.get("title_prop", "Company") or "Company"
+        title_prop = schema.get("title_prop", "Company 1") or "Company 1"
+        role_prop = schema.get("role_prop")
         status_prop = schema.get("status_prop")
 
         if not status_prop:
             return "❌ No status property found in Notion database schema."
 
+        # Find matching pages
         results = query_database_pages(
             client,
             db_id,
             query_filter={
                 "property": title_prop,
-                "title": {"equals": company}
+                "title": {"contains": company}
             }
         )
 
         if not results:
-            results = query_database_pages(
-                client,
-                db_id,
-                query_filter={
-                    "property": title_prop,
-                    "title": {"contains": company}
-                }
-            )
-
-        if not results:
             return f"❌ Could not find an existing application for company '{company}' in Notion."
 
-        page = results[0]
-        page_id = page["id"]
+        # Filter strictly for the company
+        company_pages = [p for p in results if company.lower() in get_page_company(p, title_prop).lower()]
 
+        if not company_pages:
+            return f"❌ Could not find an application matching '{company}' in Notion."
+
+        target_page = None
+
+        if len(company_pages) == 1:
+            target_page = company_pages[0]
+        else:
+            # Multiple positions exist at this company!
+            if role:
+                for p in company_pages:
+                    p_role = get_page_role(p, role_prop)
+                    if role.lower() in p_role.lower():
+                        target_page = p
+                        break
+            
+            if not target_page:
+                # Disambiguate for the user
+                listing = []
+                for p in company_pages:
+                    p_role = get_page_role(p, role_prop) or "Role unspecified"
+                    p_status = get_page_status(p, status_prop)
+                    listing.append(f"- **{p_role}** (Current Status: `{p_status}`)")
+                
+                return (
+                    f"⚠️ Found {len(company_pages)} different positions at **{company}** in your tracker:\n"
+                    + "\n".join(listing)
+                    + f"\n\nPlease specify which role to update to **{new_status}** (e.g. `role='{get_page_role(company_pages[0], role_prop)}'`)."
+                )
+
+        page_id = target_page["id"]
+        matched_role = get_page_role(target_page, role_prop) or role
+
+        # Update status
         client.pages.update(
             page_id=page_id,
             properties={
@@ -444,6 +510,7 @@ def update_job_status(
             }
         )
 
+        # Append notes if provided
         if update_notes:
             note_blocks = [
                 {
@@ -466,88 +533,25 @@ def update_job_status(
             ]
             client.blocks.children.append(block_id=page_id, children=note_blocks)
 
-        return f"✅ Status for **{company}** updated to **{new_status}**."
+        role_label = f" ({matched_role})" if matched_role else ""
+        return f"✅ Status for **{company}**{role_label} updated to **{new_status}**."
     except Exception as e:
         return f"❌ Failed to update job status: {str(e)}"
 
 @app.tool(
-    name="list_job_applications",
-    description="Lists tracked job applications from Notion, optionally filtering by status (e.g. 'Interview', 'Applied')."
+    name="get_job_details",
+    description="Retrieves the detailed notes and status of a specific job application from Notion. Specify role if multiple positions exist at that company."
 )
-def list_job_applications(status_filter: str = "") -> str:
-    """Lists tracked job applications with their status, role, and URL."""
+def get_job_details(company: str, role: str = "") -> str:
+    """Retrieves full details and blocks for a job application, supporting multiple roles."""
     try:
         client = get_notion_client()
         db_id = get_db_id()
         schema = inspect_database_schema(client, db_id)
 
-        title_prop = schema.get("title_prop", "Company") or "Company"
+        title_prop = schema.get("title_prop", "Company 1") or "Company 1"
         role_prop = schema.get("role_prop")
         status_prop = schema.get("status_prop")
-        url_prop = schema.get("url_prop")
-
-        query_filter = None
-        if status_filter and status_prop:
-            query_filter = {
-                "property": status_prop,
-                "select": {"equals": status_filter}
-            }
-
-        pages = query_database_pages(client, db_id, query_filter)
-        if not pages:
-            msg = "No job applications found"
-            if status_filter:
-                msg += f" with status '{status_filter}'"
-            return msg + " in your Notion tracker."
-
-        output = [f"### 📋 Job Applications Tracker ({len(pages)} entries)\n"]
-        output.append("| Company | Role | Status | Job URL |")
-        output.append("| :--- | :--- | :--- | :--- |")
-
-        for page in pages:
-            props = page.get("properties", {})
-
-            company_title_list = props.get(title_prop, {}).get("title", [])
-            company = company_title_list[0].get("plain_text", "Unnamed") if company_title_list else "Unnamed"
-
-            role = "-"
-            if role_prop and role_prop in props:
-                role_texts = props[role_prop].get("rich_text", [])
-                if role_texts:
-                    role = role_texts[0].get("plain_text", "-")
-
-            status = "-"
-            if status_prop and status_prop in props:
-                st_data = props[status_prop]
-                if st_data.get("type") == "select" and st_data.get("select"):
-                    status = st_data["select"].get("name", "-")
-                elif st_data.get("type") == "status" and st_data.get("status"):
-                    status = st_data["status"].get("name", "-")
-
-            url = "-"
-            if url_prop and url_prop in props:
-                raw_url = props[url_prop].get("url")
-                if raw_url:
-                    url = f"[Link]({raw_url})"
-
-            output.append(f"| **{company}** | {role} | `{status}` | {url} |")
-
-        return "\n".join(output)
-    except Exception as e:
-        return f"❌ Failed to list applications: {str(e)}"
-
-@app.tool(
-    name="get_job_details",
-    description="Retrieves the detailed notes and status of a specific job application from Notion."
-)
-def get_job_details(company: str) -> str:
-    """Retrieves full details and blocks for a job application."""
-    try:
-        client = get_notion_client()
-        db_id = get_db_id()
-        schema = inspect_database_schema(client, db_id)
-
-        title_prop = schema.get("title_prop", "Company") or "Company"
 
         results = query_database_pages(
             client,
@@ -558,16 +562,37 @@ def get_job_details(company: str) -> str:
             }
         )
 
-        if not results:
+        company_pages = [p for p in results if company.lower() in get_page_company(p, title_prop).lower()]
+
+        if not company_pages:
             return f"❌ No application found for company '{company}' in Notion."
 
-        page = results[0]
-        page_id = page["id"]
+        target_page = None
+        if len(company_pages) == 1:
+            target_page = company_pages[0]
+        else:
+            if role:
+                for p in company_pages:
+                    if role.lower() in get_page_role(p, role_prop).lower():
+                        target_page = p
+                        break
+            
+            if not target_page:
+                summary_lines = [f"Found {len(company_pages)} positions at **{company}**:"]
+                for p in company_pages:
+                    p_role = get_page_role(p, role_prop) or "Role unspecified"
+                    p_status = get_page_status(p, status_prop)
+                    summary_lines.append(f"- **{p_role}** (`{p_status}`)")
+                summary_lines.append(f"\nPlease specify which role you'd like to inspect (e.g. role='{get_page_role(company_pages[0], role_prop)}').")
+                return "\n".join(summary_lines)
+
+        page_id = target_page["id"]
+        matched_role = get_page_role(target_page, role_prop)
 
         blocks_res = client.blocks.children.list(block_id=page_id)
         blocks = blocks_res.get("results", [])
 
-        details = [f"## 🏢 Job Details for {company}\n"]
+        details = [f"## 🏢 Job Details for {company}" + (f" - {matched_role}" if matched_role else "") + "\n"]
         for block in blocks:
             b_type = block.get("type", "")
             data = block.get(b_type, {})
