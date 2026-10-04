@@ -18,6 +18,7 @@ load_dotenv()
 
 NOTION_API_KEY = os.getenv("NOTION_API_KEY", "")
 NOTION_JOB_TRACKER_DB_ID = os.getenv("NOTION_JOB_TRACKER_DB_ID", "")
+NOTION_DISCOVERED_JOBS_DB_ID = os.getenv("NOTION_DISCOVERED_JOBS_DB_ID", "")
 
 def clean_id(raw_id: str) -> str:
     if not raw_id:
@@ -26,6 +27,7 @@ def clean_id(raw_id: str) -> str:
     return cleaned
 
 NOTION_JOB_TRACKER_DB_ID = clean_id(NOTION_JOB_TRACKER_DB_ID)
+NOTION_DISCOVERED_JOBS_DB_ID = clean_id(NOTION_DISCOVERED_JOBS_DB_ID)
 
 # Initialize MCP Server
 app = MCPServer("notion-job-tracker")
@@ -40,6 +42,12 @@ def get_db_id() -> str:
     db_id = clean_id(os.getenv("NOTION_JOB_TRACKER_DB_ID", NOTION_JOB_TRACKER_DB_ID))
     if not db_id:
         raise ValueError("NOTION_JOB_TRACKER_DB_ID is not set. Please set it in your .env or environment.")
+    return db_id
+
+def get_discovery_db_id() -> str:
+    db_id = clean_id(os.getenv("NOTION_DISCOVERED_JOBS_DB_ID", NOTION_DISCOVERED_JOBS_DB_ID))
+    if not db_id:
+        raise ValueError("NOTION_DISCOVERED_JOBS_DB_ID is not set. Please set it in your .env or environment.")
     return db_id
 
 # In-memory cache for schema and data_source_id
@@ -1193,6 +1201,140 @@ def generate_interview_prep(company: str, role: str = "") -> str:
         return "\n".join(prep)
     except Exception as e:
         return f"❌ Failed to generate interview prep: {str(e)}"
+
+@app.tool(
+    name="list_discovered_jobs",
+    description="Lists recently discovered jobs from your Job Discovery Inbox database. Can filter by status (e.g. 'New', 'Approved') and specify a limit."
+)
+def list_discovered_jobs(status_filter: str = "New", limit: int = 15) -> str:
+    """Lists newly scouted job opportunities awaiting your review in Notion."""
+    try:
+        client = get_notion_client()
+        db_id = get_discovery_db_id()
+        schema = inspect_database_schema(client, db_id)
+
+        title_prop = schema.get("title_prop", "Company") or "Company"
+        role_prop = schema.get("role_prop", "Role") or "Role"
+        status_prop = schema.get("status_prop")
+        url_prop = schema.get("url_prop")
+        location_prop = schema.get("location_prop")
+        notes_prop = schema.get("notes_prop")
+
+        query_filter = None
+        if status_filter and status_prop:
+            query_filter = {
+                "property": status_prop,
+                "select": {"equals": status_filter}
+            }
+
+        pages = query_database_pages(client, db_id, query_filter)
+        if not pages:
+            msg = "No discovered jobs found"
+            if status_filter:
+                msg += f" with status '{status_filter}'"
+            return msg + " in your Discovery Inbox."
+
+        output = [f"### 📥 Job Discovery Inbox ({len(pages)} entries with status '{status_filter}')\n"]
+        output.append("| Company | Role | Location | Job URL | Notes / Snippet |")
+        output.append("| :--- | :--- | :--- | :--- | :--- |")
+
+        for page in pages[:limit]:
+            props = page.get("properties", {})
+            company = get_page_company(page, title_prop) or "Unnamed"
+            role = get_page_role(page, role_prop) or "-"
+            loc = get_page_text(page, location_prop) or "-"
+
+            url = "-"
+            if url_prop and url_prop in props:
+                raw_url = props[url_prop].get("url")
+                if raw_url:
+                    url = f"[Apply / Link]({raw_url})"
+
+            notes = "-"
+            if notes_prop and notes_prop in props:
+                raw_notes = props[notes_prop].get("rich_text", [])
+                if raw_notes:
+                    notes = "".join(t.get("plain_text", "") for t in raw_notes)[:120] + "..."
+
+            output.append(f"| **{company}** | {role} | {loc} | {url} | {notes} |")
+
+        return "\n".join(output)
+    except Exception as e:
+        return f"❌ Failed to list discovered jobs: {str(e)}"
+
+@app.tool(
+    name="update_discovered_job_status",
+    description="Updates the status of a lead in your Job Discovery Inbox (e.g. 'Approved', 'Dismissed', 'Moved to Pipeline')."
+)
+def update_discovered_job_status(company: str, new_status: str, role: str = "") -> str:
+    """Updates the status of a job lead in the Discovery Inbox."""
+    try:
+        client = get_notion_client()
+        db_id = get_discovery_db_id()
+        schema = inspect_database_schema(client, db_id)
+
+        title_prop = schema.get("title_prop", "Company") or "Company"
+        role_prop = schema.get("role_prop", "Role") or "Role"
+        status_prop = schema.get("status_prop")
+
+        if not status_prop:
+            return "❌ No status property found in Discovery Inbox schema."
+
+        results = query_database_pages(
+            client,
+            db_id,
+            query_filter={
+                "property": title_prop,
+                "title": {"contains": company}
+            }
+        )
+
+        if not results:
+            return f"❌ Could not find a lead for '{company}' in Discovery Inbox."
+
+        target_page = results[0]
+        if len(results) > 1 and role:
+            for p in results:
+                if role.lower() in get_page_role(p, role_prop).lower():
+                    target_page = p
+                    break
+
+        page_id = target_page["id"]
+        update_payload = {
+            status_prop: {"select": {"name": new_status}}
+        }
+
+        client.pages.update(page_id=page_id, properties=update_payload)
+        return f"✅ Updated lead **{company}** in Discovery Inbox to **{new_status}**."
+    except Exception as e:
+        return f"❌ Failed to update discovered job: {str(e)}"
+
+@app.tool(
+    name="run_job_scout",
+    description="Runs the Job Scout discovery engine to scrape and push newly posted jobs to your Notion Discovery Inbox. Specify freshness ('24h' or 'week') and category ('all', 'werkstudent', 'ai_agents', 'sdet_qa', 'backend')."
+)
+def run_job_scout(freshness: str = "24h", category: str = "all") -> str:
+    """Executes job_discovery_inbox/scout.py and pushes matches to Notion."""
+    try:
+        import subprocess
+        scout_dir = os.path.expanduser("~/Projects/Personal/job_discovery_inbox")
+        python_bin = os.path.join(scout_dir, ".venv/bin/python")
+        if not os.path.exists(python_bin):
+            python_bin = sys.executable
+
+        scout_script = os.path.join(scout_dir, "scout.py")
+        if not os.path.exists(scout_script):
+            return f"❌ scout.py not found at {scout_script}."
+
+        cmd = [python_bin, scout_script, "--fresh", freshness, "--category", category, "--push-notion"]
+        res = subprocess.run(cmd, cwd=scout_dir, capture_output=True, text=True, timeout=180)
+
+        if res.returncode == 0:
+            return f"✅ Job Scout executed successfully!\n\n```text\n{res.stdout[-800:]}\n```\nUse `list_discovered_jobs` to see the newly logged postings."
+        else:
+            return f"⚠️ Scout finished with exit code {res.returncode}:\n{res.stderr or res.stdout}"
+    except Exception as e:
+        return f"❌ Failed to run Job Scout: {str(e)}"
 
 if __name__ == "__main__":
     app.run(transport="stdio")

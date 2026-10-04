@@ -19,6 +19,9 @@
 * 🔄 **`update_job_status`**: Easily update stages (*Applied &rarr; Screening &rarr; Interview &rarr; Offer &rarr; Rejected*) and append timestamped notes.
 * 📋 **`list_job_applications`**: Overview Markdown table of tracked applications with direct links.
 * 🔍 **`get_job_details`**: Retrieves full notes, match points, and history for any company application.
+* 📥 **`list_discovered_jobs`**: Queries freshly scouted leads from your Job Discovery Inbox database (filter by `New`, `Approved`, etc.).
+* 🏷️ **`update_discovered_job_status`**: Marks discovery leads as `Approved`, `Dismissed`, or `Moved to Pipeline`.
+* 🚀 **`run_job_scout`**: Runs the autonomous Job Scout scraper on demand to discover new openings from ATS systems (Personio, Ashby, Greenhouse, Lever).
 * 🔌 **`verify_notion_connection`**: Validates Notion token and dynamic database schema mapping.
 
 ---
