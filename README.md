@@ -28,7 +28,9 @@
 
 ## 🔗 The Complete Autonomous Career Pipeline
 
-This MCP server serves as the central cockpit connecting your discovery tools and CV compiler:
+This MCP server serves as the central cockpit connecting your discovery tools and CV compiler. Pair it with:
+* 🕵️ **[Job Discovery Inbox](https://github.com/AhmedKhalifa3/job-discovery-inbox)** — Autonomous ATS discovery engine (Greenhouse, Lever, Ashby, Personio) that finds and feeds fresh unlisted leads into your Notion Discovery Inbox.
+* 🚀 **[Overleaf CV Agent](https://github.com/AhmedKhalifa3/overleaf-cv-agent)** — Autonomous LaTeX resume tailoring & headless cloud compiler.
 
 ```text
 ┌────────────────────────────────────────────────────────┐
