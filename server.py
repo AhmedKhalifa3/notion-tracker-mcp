@@ -1311,9 +1311,9 @@ def update_discovered_job_status(company: str, new_status: str, role: str = "") 
 
 @app.tool(
     name="run_job_scout",
-    description="Runs the Job Scout discovery engine to scrape and push newly posted jobs to your Notion Discovery Inbox. Specify freshness ('24h' or 'week') and category ('all', 'werkstudent', 'ai_agents', 'sdet_qa', 'backend')."
+    description="Runs the Job Scout discovery engine to scrape and push newly posted jobs matching your profile.yaml to your Notion Discovery Inbox. Specify freshness ('24h' or 'week'), optional category ('all'), and optional profile_path."
 )
-def run_job_scout(freshness: str = "24h", category: str = "all") -> str:
+def run_job_scout(freshness: str = "24h", category: str = "all", profile_path: Optional[str] = None) -> str:
     """Executes job_discovery_inbox/scout.py and pushes matches to Notion."""
     try:
         import subprocess
@@ -1327,6 +1327,9 @@ def run_job_scout(freshness: str = "24h", category: str = "all") -> str:
             return f"❌ scout.py not found at {scout_script}."
 
         cmd = [python_bin, scout_script, "--fresh", freshness, "--category", category, "--push-notion"]
+        if profile_path:
+            cmd.extend(["--profile", profile_path])
+
         res = subprocess.run(cmd, cwd=scout_dir, capture_output=True, text=True, timeout=180)
 
         if res.returncode == 0:
