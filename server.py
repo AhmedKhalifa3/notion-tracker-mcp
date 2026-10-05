@@ -330,26 +330,48 @@ def query_database_pages(client: Client, db_id: str, query_filter: Optional[Dict
     schema = inspect_database_schema(client, db_id)
     ds_id = schema.get("data_source_id")
 
-    kwargs: Dict[str, Any] = {}
-    if query_filter:
-        kwargs["filter"] = query_filter
+    results: List[Dict[str, Any]] = []
+    has_more = True
+    start_cursor = None
 
-    if ds_id:
+    while has_more:
+        kwargs: Dict[str, Any] = {}
+        if query_filter:
+            kwargs["filter"] = query_filter
+        if start_cursor:
+            kwargs["start_cursor"] = start_cursor
+
+        if ds_id:
+            try:
+                res = client.data_sources.query(data_source_id=ds_id, **kwargs)
+                results.extend(res.get("results", []))
+                has_more = res.get("has_more", False)
+                start_cursor = res.get("next_cursor")
+                if not has_more or not start_cursor:
+                    break
+                continue
+            except Exception:
+                pass
+
+        # Standard database endpoint fallback
+        body: Dict[str, Any] = {}
+        if query_filter:
+            body["filter"] = query_filter
+        if start_cursor:
+            body["start_cursor"] = start_cursor
         try:
-            res = client.data_sources.query(data_source_id=ds_id, **kwargs)
-            return res.get("results", [])
-        except Exception:
-            pass
+            res = client.request(path=f"databases/{db_id}/query", method="POST", body=body)
+            results.extend(res.get("results", []))
+            has_more = res.get("has_more", False)
+            start_cursor = res.get("next_cursor")
+            if not has_more or not start_cursor:
+                break
+        except Exception as e:
+            if not results:
+                raise e
+            break
 
-    # Standard database endpoint fallback
-    body = {}
-    if query_filter:
-        body["filter"] = query_filter
-    try:
-        res = client.request(path=f"databases/{db_id}/query", method="POST", body=body)
-        return res.get("results", [])
-    except Exception as e:
-        raise e
+    return results
 
 # --- MCP Tools ---
 
@@ -1385,17 +1407,7 @@ def clean_dismissed_discovered_jobs() -> str:
             status_type: {"equals": "Dismissed"}
         }
 
-        pages: List[Dict[str, Any]] = []
-        has_more = True
-        start_cursor = None
-        while has_more:
-            body: Dict[str, Any] = {"filter": query_filter}
-            if start_cursor:
-                body["start_cursor"] = start_cursor
-            res = client.request(path=f"databases/{db_id}/query", method="POST", body=body)
-            pages.extend(res.get("results", []))
-            has_more = res.get("has_more", False)
-            start_cursor = res.get("next_cursor")
+        pages = query_database_pages(client, db_id, query_filter)
 
         if not pages:
             return "ℹ️ No dismissed jobs found in Discovery Inbox to clean."
