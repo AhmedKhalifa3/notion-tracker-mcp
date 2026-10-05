@@ -78,6 +78,7 @@ def inspect_database_schema(client: Client, db_id: str) -> Dict[str, Any]:
             "title_prop": None,
             "role_prop": None,
             "status_prop": None,
+            "status_type": None,
             "url_prop": None,
             "date_prop": None,
             "location_prop": None,
@@ -105,6 +106,7 @@ def inspect_database_schema(client: Client, db_id: str) -> Dict[str, Any]:
                     schema["date_prop"] = name
             elif prop_type in ("select", "status") and not schema["status_prop"] and any(k in lower_name for k in ["status", "stage", "state"]):
                 schema["status_prop"] = name
+                schema["status_type"] = prop_type
                 opts = data.get(prop_type, {}).get("options", [])
                 schema["status_options"] = [opt.get("name") for opt in opts]
             elif prop_type == "select" and "priority" in lower_name and not schema["priority_prop"]:
@@ -135,6 +137,7 @@ def inspect_database_schema(client: Client, db_id: str) -> Dict[str, Any]:
             for name, data in props.items():
                 if data.get("type") in ("select", "status"):
                     schema["status_prop"] = name
+                    schema["status_type"] = data.get("type")
                     opts = data.get(data.get("type"), {}).get("options", [])
                     schema["status_options"] = [opt.get("name") for opt in opts]
                     break
@@ -1222,9 +1225,10 @@ def list_discovered_jobs(status_filter: str = "New", limit: int = 15) -> str:
 
         query_filter = None
         if status_filter and status_prop:
+            status_type = schema.get("status_type") or "select"
             query_filter = {
                 "property": status_prop,
-                "select": {"equals": status_filter}
+                status_type: {"equals": status_filter}
             }
 
         pages = query_database_pages(client, db_id, query_filter)
@@ -1300,14 +1304,118 @@ def update_discovered_job_status(company: str, new_status: str, role: str = "") 
                     break
 
         page_id = target_page["id"]
+        status_type = schema.get("status_type") or "select"
         update_payload = {
-            status_prop: {"select": {"name": new_status}}
+            status_prop: {status_type: {"name": new_status}}
         }
 
         client.pages.update(page_id=page_id, properties=update_payload)
         return f"✅ Updated lead **{company}** in Discovery Inbox to **{new_status}**."
     except Exception as e:
         return f"❌ Failed to update discovered job: {str(e)}"
+
+@app.tool(
+    name="delete_discovered_job",
+    description="Deletes (archives to Notion Trash) a specific job lead from your Job Discovery Inbox by company name and optional role."
+)
+def delete_discovered_job(company: str, role: str = "") -> str:
+    """Deletes (archives) a job lead from the Job Discovery Inbox."""
+    try:
+        client = get_notion_client()
+        db_id = get_discovery_db_id()
+        schema = inspect_database_schema(client, db_id)
+
+        title_prop = schema.get("title_prop", "Company") or "Company"
+        role_prop = schema.get("role_prop", "Role") or "Role"
+
+        results = query_database_pages(
+            client,
+            db_id,
+            query_filter={
+                "property": title_prop,
+                "title": {"contains": company}
+            }
+        )
+
+        if not results:
+            return f"❌ Could not find a lead for '{company}' in Discovery Inbox."
+
+        target_page = None
+        if len(results) == 1:
+            target_page = results[0]
+        else:
+            if role:
+                for p in results:
+                    if role.lower() in get_page_role(p, role_prop).lower():
+                        target_page = p
+                        break
+            if not target_page:
+                matching_roles = [f"'{get_page_role(p, role_prop)}'" for p in results if get_page_role(p, role_prop)]
+                roles_str = ", ".join(matching_roles) if matching_roles else f"{len(results)} entries"
+                return f"⚠️ Multiple entries found for '{company}' ({roles_str}). Please specify the 'role' parameter to delete the exact lead."
+
+        page_id = target_page["id"]
+        found_company = get_page_company(target_page, title_prop) or company
+        found_role = get_page_role(target_page, role_prop) or "Lead"
+
+        client.pages.update(page_id=page_id, archived=True)
+        return f"🗑️ Successfully deleted (archived) lead **{found_company}** ({found_role}) from Discovery Inbox."
+    except Exception as e:
+        return f"❌ Failed to delete discovered job: {str(e)}"
+
+@app.tool(
+    name="clean_dismissed_discovered_jobs",
+    description="Bulk deletes (archives to Notion Trash) all job postings in the Job Discovery Inbox that have status 'Dismissed'."
+)
+def clean_dismissed_discovered_jobs() -> str:
+    """Finds all leads marked 'Dismissed' in Discovery Inbox and archives them in bulk."""
+    try:
+        client = get_notion_client()
+        db_id = get_discovery_db_id()
+        schema = inspect_database_schema(client, db_id)
+
+        status_prop = schema.get("status_prop")
+        status_type = schema.get("status_type") or "select"
+
+        if not status_prop:
+            return "❌ No status property found in Discovery Inbox schema."
+
+        query_filter = {
+            "property": status_prop,
+            status_type: {"equals": "Dismissed"}
+        }
+
+        pages: List[Dict[str, Any]] = []
+        has_more = True
+        start_cursor = None
+        while has_more:
+            body: Dict[str, Any] = {"filter": query_filter}
+            if start_cursor:
+                body["start_cursor"] = start_cursor
+            res = client.request(path=f"databases/{db_id}/query", method="POST", body=body)
+            pages.extend(res.get("results", []))
+            has_more = res.get("has_more", False)
+            start_cursor = res.get("next_cursor")
+
+        if not pages:
+            return "ℹ️ No dismissed jobs found in Discovery Inbox to clean."
+
+        deleted_count = 0
+        failed_count = 0
+        for p in pages:
+            p_id = p["id"]
+            try:
+                client.pages.update(page_id=p_id, archived=True)
+                deleted_count += 1
+            except Exception:
+                failed_count += 1
+
+        msg = f"🗑️ Cleaned {deleted_count} dismissed job(s) from Discovery Inbox (moved to Notion Trash)."
+        if failed_count > 0:
+            msg += f" ({failed_count} failed to archive)."
+        return msg
+    except Exception as e:
+        return f"❌ Failed to clean dismissed jobs: {str(e)}"
 
 @app.tool(
     name="run_job_scout",

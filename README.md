@@ -8,6 +8,8 @@
 
 * 📥 **`list_discovered_jobs`**: Queries freshly scouted leads from your Job Discovery Inbox database (filter by `New`, `Approved`, etc.).
 * 🏷️ **`update_discovered_job_status`**: Marks discovery leads as `Approved`, `Dismissed`, or `Moved to Pipeline`.
+* 🗑️ **`delete_discovered_job`**: Deletes (archives to Notion Trash) an individual job lead from your Discovery Inbox.
+* 🧹 **`clean_dismissed_discovered_jobs`**: Bulk-archives (moves to Trash) all `Dismissed` leads from your Discovery Inbox.
 * 🚀 **`run_job_scout`**: Runs the autonomous Job Scout scraper on demand to discover new openings from ATS systems (Personio, Ashby, Greenhouse, Lever).
 * 💼 **`track_job_application`**: Logs or updates applications with Company, Role, URL, Location, Status, Contact, Follow-up date, and structured notes. Distinguishes multiple roles at the same company!
 * 📎 **`attach_cv`**: Direct binary upload of tailored CV files (`.pdf`, `.docx`, etc.) directly into Notion storage and page blocks.
@@ -186,10 +188,14 @@ Add this server to your `claude_desktop_config.json`:
 > *"Claude, run the Job Scout for the past 24 hours in the 'werkstudent' category."*
 *(Claude invokes `run_job_scout`, scrapes live ATS postings, and syncs them to your Notion inbox).*
 
-### 4. Application Logging & Status Updates
+### 4. Clean Dismissed Leads from Discovery Inbox
+> *"Claude, clean up all the dismissed job postings in my discovery inbox."*
+*(Claude calls `clean_dismissed_discovered_jobs` to bulk-archive all leads with status 'Dismissed' to Notion Trash).*
+
+### 5. Application Logging & Status Updates
 > *"I just had a phone screening with Spotify. Update my Spotify application to 'Interview' and add a note that the technical round is next Wednesday."*
 
-### 5. Analytics & Pipeline Insights
+### 6. Analytics & Pipeline Insights
 > *"Show me my job hunt analytics and response rates."*
 *(Returns total submitted, active interviews, response rate %, monthly velocity, and stale applications).*
 
