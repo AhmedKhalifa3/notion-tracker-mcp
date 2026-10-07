@@ -11,7 +11,7 @@
 * 🗑️ **`delete_discovered_job`**: Deletes (archives to Notion Trash) an individual job lead from your Discovery Inbox.
 * 🧹 **`clean_dismissed_discovered_jobs`**: Bulk-archives (moves to Trash) all `Dismissed` leads from your Discovery Inbox.
 * 🚀 **`run_job_scout`**: Runs the autonomous Job Scout scraper on demand to discover new openings from ATS systems (Personio, Ashby, Greenhouse, Lever).
-* 💼 **`track_job_application`**: Logs or updates applications with Company, Role, URL, Location, Status, Contact, Follow-up date, and structured notes. Distinguishes multiple roles at the same company!
+* 💼 **`track_job_application`**: Logs or updates applications with Company, Role, URL, Location, Status, Contact, Follow-up date, full Job Description retention, and structured notes. Distinguishes multiple roles at the same company and permanently preserves the full original job posting inside the Notion page body (avoiding data loss if links expire)!
 * 📎 **`attach_cv`**: Direct binary upload of tailored CV files (`.pdf`, `.docx`, etc.) directly into Notion storage and page blocks.
 * 📊 **`get_application_insights`**: Real-time pipeline dashboard computing:
   * Application counters (Applied, Screening, Interview, Offer, Rejected, Wishlist).

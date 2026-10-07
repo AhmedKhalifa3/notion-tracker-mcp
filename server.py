@@ -243,7 +243,8 @@ def build_notion_blocks(
     job_url: str = "",
     location: str = "",
     cv_filename: str = "",
-    cv_block: Optional[Dict[str, Any]] = None
+    cv_block: Optional[Dict[str, Any]] = None,
+    job_description: str = ""
 ) -> List[Dict[str, Any]]:
     """Builds structured Notion blocks for the page body."""
     blocks: List[Dict[str, Any]] = []
@@ -322,6 +323,26 @@ def build_notion_blocks(
             }
         })
         blocks.append(cv_block)
+
+    if job_description:
+        blocks.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {
+                "rich_text": [{"type": "text", "text": {"content": "📋 Full Job Description"}}]
+            }
+        })
+        jd_paras = [p.strip() for p in job_description.split("\n") if p.strip()]
+        for para in jd_paras[:60]:
+            for i in range(0, len(para), 1800):
+                chunk = para[i:i+1800]
+                blocks.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{"type": "text", "text": {"content": chunk}}]
+                    }
+                })
 
     return blocks
 
@@ -479,7 +500,8 @@ def track_job_application(
     next_followup: str = "",
     summary: str = "",
     match_points: Optional[List[str]] = None,
-    notes: str = ""
+    notes: str = "",
+    job_description: str = ""
 ) -> str:
     """Tracks a job application in the Notion database, distinguishing multiple roles per company."""
     try:
@@ -597,7 +619,8 @@ def track_job_application(
             job_url=job_url,
             location=location,
             cv_filename=upload_data.get("filename", ""),
-            cv_block=upload_data.get("block_payload")
+            cv_block=upload_data.get("block_payload"),
+            job_description=job_description
         )
 
         if target_page_id:
@@ -628,6 +651,26 @@ def track_job_application(
                     }
                 })
                 update_block.append(upload_data["block_payload"])
+
+            if job_description:
+                update_block.append({
+                    "object": "block",
+                    "type": "heading_2",
+                    "heading_2": {
+                        "rich_text": [{"type": "text", "text": {"content": "📋 Full Job Description"}}]
+                    }
+                })
+                jd_paras = [p.strip() for p in job_description.split("\n") if p.strip()]
+                for para in jd_paras[:60]:
+                    for i in range(0, len(para), 1800):
+                        chunk = para[i:i+1800]
+                        update_block.append({
+                            "object": "block",
+                            "type": "paragraph",
+                            "paragraph": {
+                                "rich_text": [{"type": "text", "text": {"content": chunk}}]
+                            }
+                        })
 
             client.blocks.children.append(block_id=target_page_id, children=update_block)
             return f"✅ Updated existing application for **{company}** - **{role or 'General'}** with status **{status}** in Notion."
